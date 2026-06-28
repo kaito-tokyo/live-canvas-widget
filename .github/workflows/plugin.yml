@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# SPDX-FileCopyrightText: 2026 Kaito Udagawa <umireon@kaito.tokyo>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Plugin CI
+
+# file: .github/workflows/plugin.yml
+# author: Kaito Udagawa <umireon@kaito.tokyo>
+# date: 2026-06-21
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['*']
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/plugin-build-macos.yml
+    with:
+      job-index: 0
+      environment: ${{ github.event_name == 'push' && 'production-macos' || '' }}
+      runs-on: macos-15
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      osx-architectures: arm64;x86_64
+      osx-deployment-target: '12.0'
+      VCPKG_BINARY_SOURCES: clear;http,https://vcpkg-obs.kaito.tokyo/{name}/{version}/{sha},read
+    secrets: inherit
+
+  accept-plugin:
+    if: always()
+    needs:
+      - build-macos
+    runs-on: ubuntu-slim
+    permissions: {}
+    steps:
+      - name: Check the workflow result
+        run: |
+          [[ "${{ needs.build-macos.result }}" == 'success' ]]
+

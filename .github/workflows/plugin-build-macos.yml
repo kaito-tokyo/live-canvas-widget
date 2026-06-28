@@ -1,0 +1,255 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# SPDX-FileCopyrightText: 2025-2026 Kaito Udagawa <umireon@kaito.tokyo>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Plugin build macOS
+
+# file: .github/workflows/plugin-build-macos.yml
+# author: Kaito Udagawa <umireon@kaito.tokyo>
+# date: 2026-06-21
+
+on:
+  workflow_call:
+    inputs:
+      job-index:
+        description: The job index for logging.
+        required: false
+        type: number
+        default: 0
+      environment:
+        description: The environment name for the build jobs, or empty string for no environment.
+        required: false
+        type: string
+        default: ''
+      runs-on:
+        description: The runner label to run this workflow on.
+        required: true
+        type: string
+      DEVELOPER_DIR:
+        description: The value of DEVELOPER_DIR environment variable.
+        required: true
+        type: string
+      osx-architectures:
+        description: The architecture to build for.
+        required: true
+        type: string
+      osx-deployment-target:
+        description: The deployment target of macOS.
+        required: true
+        type: string
+      VCPKG_BINARY_SOURCES:
+        description: VCPKG_BINARY_SOURCES environment variable for the build jobs.
+        required: true
+        type: string
+
+    secrets:
+      APP_STORE_CONNECT_ISSUER:
+        required: false
+      APP_STORE_CONNECT_KEY:
+        required: false
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
+      MACOS_SIGNING_APPLICATION_IDENTITY:
+        required: false
+      MACOS_SIGNING_INSTALLER_IDENTITY:
+        required: false
+      MACOS_SIGNING_CERT_PASSWORD:
+        required: false
+      MACOS_SIGNING_CERT:
+        required: false
+
+permissions: {}
+
+jobs:
+  build-macos-universal:
+    environment: ${{ inputs.environment }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 180
+
+    permissions:
+      contents: read
+
+    env:
+      DEVELOPER_DIR: ${{ inputs.DEVELOPER_DIR }}
+      VCPKG_BINARY_SOURCES: ${{ inputs.VCPKG_BINARY_SOURCES }}
+
+    steps:
+      - name: Print Xcode version
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          xcodebuild -version
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Extract buildspec.props
+        id: buildspec
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          awk '!/(^#|^[[:space:]]*$)/' buildspec.props >> "$GITHUB_OUTPUT"
+
+      - name: Checkout vcpkg
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.buildspec.outputs.vcpkg_default_git_tag }}
+          persist-credentials: false
+          path: vcpkg
+          filter: blob:none
+
+      - name: Assert vcpkg git commit
+        shell: pwsh
+        working-directory: vcpkg
+        env:
+          GIT_COMMIT: ${{ steps.buildspec.outputs.vcpkg_default_git_commit }}
+        run: |
+          $actualGitCommit = git rev-parse HEAD
+          if ($actualGitCommit -ne $env:GIT_COMMIT) { throw "Git commit not match: expected $env:GIT_COMMIT, actual $actualGitCommit" }
+
+      - name: Checkout obs-studio
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ steps.buildspec.outputs.obs_studio_git_tag }}
+          persist-credentials: false
+          path: obs-studio
+          filter: blob:none
+
+      - name: Assert obs-studio git commit
+        shell: pwsh
+        working-directory: obs-studio
+        env:
+          GIT_COMMIT: ${{ steps.buildspec.outputs.obs_studio_git_commit }}
+        run: |
+          $actualGitCommit = git rev-parse HEAD
+          if ($actualGitCommit -ne $env:GIT_COMMIT) { throw "Git commit not match: expected $env:GIT_COMMIT, actual $actualGitCommit" }
+
+      - name: Run bootstrap-vcpkg.sh
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Extract toolchain paths
+        id: toolchain
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true
+
+          $vcpkgExe = Join-Path $env:GITHUB_WORKSPACE 'vcpkg' 'vcpkg'
+
+          $cmakeDir = & $vcpkgExe fetch cmake | Select-Object -Last 1 | Split-Path -Parent
+          $ninjaDir = & $vcpkgExe fetch ninja | Select-Object -Last 1 | Split-Path -Parent
+
+          Add-Content "CMAKE_DIR=$cmakeDir" -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+          Add-Content "NINJA_DIR=$ninjaDir" -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+
+      - name: Build OBS (macOS)
+        shell: pwsh
+        env:
+          CMAKE_DIR: ${{ steps.toolchain.outputs.CMAKE_DIR }}
+          NINJA_DIR: ${{ steps.toolchain.outputs.NINJA_DIR }}
+        run: |
+          Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true
+
+          Import-Module ./scripts/BuildOBS.psm1
+
+          $env:PATH = "${env:CMAKE_DIR}:${env:NINJA_DIR}:/usr/bin:/bin:/usr/sbin:/sbin"
+
+          # Remove vcpkg variables
+          $env:VCPKG_ROOT = $null
+          $env:VCPKG_INSTALLATION_ROOT = $null
+
+          # Build OBS
+          Initialize-ObsDeps -Component prebuilt
+          Initialize-ObsDeps -Component qt6
+          Invoke-ObsConfigure -OsxArchitectures '${{ inputs.osx-architectures }}' -OsxDeploymentTarget '${{ inputs.osx-deployment-target }}'
+          Invoke-ObsBuild
+          Install-Obs
+
+      - name: Build Plugin (macOS)
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        env:
+          CMAKE_DIR: ${{ steps.toolchain.outputs.CMAKE_DIR }}
+          NINJA_DIR: ${{ steps.toolchain.outputs.NINJA_DIR }}
+        run: |
+          cmake() {
+            env -i \
+              DEVELOPER_DIR="$DEVELOPER_DIR" \
+              HOME="$HOME" \
+              PATH="$CMAKE_DIR:$NINJA_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+              "$CMAKE_DIR/cmake" "$@"
+          }
+
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_OSX_ARCHITECTURES='${{ inputs.osx-architectures }}' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET='${{ inputs.osx-deployment-target }}' \
+            -DPLUGIN_VERSION_SUFFIX=''
+
+          cmake --build build --config RelWithDebInfo
+
+      - name: Extract dSYM
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          PLUGIN_NAME=$(cmake -B build -N -LA | awk -vFS== '/^PLUGIN_NAME:/ { print $2 }')
+          mkdir -p release
+          dsymutil "build/$PLUGIN_NAME.plugin/Contents/MacOS/$PLUGIN_NAME" -o "build/$PLUGIN_NAME.dSYM"
+          ZSTD_CLEVEL=19 tar -acf "release/$PLUGIN_NAME.dSYM.tar.zst" --mac-metadata "build/$PLUGIN_NAME.dSYM"
+
+      - name: Set up macOS Signing Certificates
+        if: inputs.environment == 'production-macos'
+        id: codesign
+        uses: ./.github/actions/setup-macos-codesigning
+        with:
+          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
+          MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+
+      - name: Package Plugin (macOS)
+        if: inputs.environment != 'production-macos'
+        run: |
+          cmake --build build --target package_pkg_nosign
+
+      - name: Package Plugin with signing (macOS)
+        if: inputs.environment == 'production-macos'
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        env:
+          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
+          MACOS_SIGNING_INSTALLER_IDENTITY: ${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}
+        run: |
+          cmake --build build --target package_pkg_signed
+
+      - name: Notarize Installer
+        if: inputs.environment == 'production-macos'
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        env:
+          CODESIGN_TEAM: ${{ steps.codesign.outputs.CODESIGN_TEAM }}
+          APP_STORE_CONNECT_ISSUER: ${{ secrets.APP_STORE_CONNECT_ISSUER }}
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          KEY_FILE="$(mktemp -t APP_STORE_CONNECT_KEY)"
+
+          printenv APP_STORE_CONNECT_KEY >"$KEY_FILE"
+
+          xcrun notarytool submit release/*-macos-universal.pkg \
+            --issuer "$APP_STORE_CONNECT_ISSUER" \
+            --key "$KEY_FILE" \
+            --key-id "$APP_STORE_CONNECT_KEY_ID" \
+            --wait
+
+          xcrun stapler staple release/*-macos-universal.pkg
+
+      - name: Upload Plugin Binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pluginbinary-${{ runner.os }}-universal-${{ github.run_id }}
+          path: |
+            release/*.pkg
+            release/*.dSYM.tar.zst
+          if-no-files-found: error
+          retention-days: 7

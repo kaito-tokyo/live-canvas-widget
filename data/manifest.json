@@ -1,0 +1,13 @@
+{
+  "display_name": "Live Canvas Widget",
+  "id": "tokyo.kaito.live-canvas-widget",
+  "version": "0.1.0",
+  "name": "live-canvas-widget",
+  "description": "A source plugin with a lightweight rendering engine for OBS Studio",
+  "os_arch": "macos",
+  "urls": {
+    "repository": "https://github.com/kaito-tokyo/live-canvas-widget",
+    "website": "https://github.com/kaito-tokyo/live-canvas-widget",
+    "support": "https://github.com/kaito-tokyo/live-canvas-widget/issues"
+  }
+}
