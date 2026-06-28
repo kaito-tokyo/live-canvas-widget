@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Kaito Udagawa <umireon@kaito.tokyo>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+shopt -s nullglob
+
+usage() {
+  printf 'Usage: bin/build [--install]\n'
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+  --install) FLAG_INSTALL=1 ;;
+  --xcode) FLAG_XCODE=1 ;;
+  --skip-deps) FLAG_SKIP_DEPS=1 ;;
+  --help)
+    usage >&2
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 0
+    ;;
+  esac
+  shift
+done
+
+macos() {
+  : "${PLUGIN_CONFIG:=RelWithDebInfo}"
+  : "${VCPKG_ROOT:=${PLUGIN_BUILD_DIR:-.}/vcpkg}"
+
+  xcbeautify() { if command -v xcbeautify >/dev/null 2>&1; then command xcbeautify; else cat; fi; }
+
+  if [[ -z "${VCPKG_BINARY_SOURCES:-}" ]]; then
+    VCPKG_BINARY_SOURCES="clear;files,${PLUGIN_BUILD_DIR:-$PWD}/.vcpkg_archives,readwrite;http,https://vcpkg-obs.kaito.tokyo/{name}/{version}/{sha},read"
+  fi
+
+  export VCPKG_ROOT VCPKG_BINARY_SOURCES
+
+  pwshExe=$("${VCPKG_ROOT:?}/vcpkg" fetch powershell-core | tail -n1)
+  cmakeExe=$("${VCPKG_ROOT:?}/vcpkg" fetch cmake | tail -n1)
+  ninjaExe=$("${VCPKG_ROOT:?}/vcpkg" fetch ninja | tail -n1)
+
+  pwsh() { "$pwshExe" "$@"; }
+
+  if [[ "${FLAG_SKIP_DEPS:-}" != '1' ]]; then
+    printf '#==> Install vcpkg dependencies\n'
+
+    "${VCPKG_ROOT:?}/vcpkg" install
+
+    printf '#==> Build OBS sources\n'
+
+    export PATH="${cmakeExe%/*}:${ninjaExe%/*}:$PATH"
+
+    pwsh -NoProfile -Command "Import-Module ./scripts/BuildOBS.psm1 && Invoke-ObsConfigure"
+    pwsh -NoProfile -Command "Import-Module ./scripts/BuildOBS.psm1 && Invoke-ObsBuild"
+    pwsh -NoProfile -Command "Import-Module ./scripts/BuildOBS.psm1 && Install-Obs"
+  else
+    printf '#==> Skipping dependencies...\n'
+  fi
+
+  printf '#==> Build Plugin\n'
+
+  if [[ "${FLAG_XCODE:-}" == '1' ]]; then
+    BUILD_DIR="${PLUGIN_BUILD_DIR:-.}/build_xcode"
+    cmake --preset macos -G Xcode -B "$BUILD_DIR"
+  else
+    cmake --preset macos -DCMAKE_BUILD_TYPE="${PLUGIN_CONFIG:-RelWithDebInfo}" -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)"
+  fi
+
+  cmake --build "${BUILD_DIR:-build}"
+
+  if [[ "${FLAG_INSTALL:-}" == '1' ]]; then
+    PLUGIN_NAME=$(cmake -B "${BUILD_DIR:-build}" -N -LA | awk -vFS== '/^PLUGIN_NAME:/ { print $2 }')
+    cmake --install "${BUILD_DIR:-build}" --config "${PLUGIN_CONFIG:-RelWithDebInfo}" --prefix "${HOME?}"
+    codesign -s - -f -o runtime --deep --timestamp "${HOME?}/Library/Application Support/obs-studio/plugins/${PLUGIN_NAME?}.plugin"
+  fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  set -euo pipefail
+  shopt -s nullglob
+
+  if ! [[ -f buildspec.props ]]; then
+    printf 'ERROR: buildspec.props not found. The working directory MUST be the root of the project.\n' >&2
+    exit 1
+  fi
+
+  if [[ "$(uname -s)" == Darwin ]]; then
+    macos
+  else
+    printf 'ERROR: Your platform is not supported. Exiting...\n' >&2
+    exit 1
+  fi
+fi

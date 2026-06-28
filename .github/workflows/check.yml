@@ -1,0 +1,161 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# SPDX-FileCopyrightText: 2026 Kaito Udagawa <umireon@kaito.tokyo>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Check CI
+
+# file: .github/workflows/check.yml
+# author: Kaito Udagawa <umireon@kaito.tokyo>
+# date: 2026-05-08
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['*']
+
+permissions: {}
+
+jobs:
+  check-shellcheck:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Print shellcheck version
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          shellcheck --version
+
+      - name: Check with shellcheck
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          git ls-files 'bin/*' '*.sh' | xargs -r shellcheck -x
+
+  check-shfmt:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install shfmt with apt
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shfmt
+
+      - name: Check with shfmt
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          git ls-files 'bin/*' '*.sh' | xargs -r shfmt -i 2 -d
+
+  check-clang-format:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Print clang-format version
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          clang-format --version
+
+      - name: Check with clang-format
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          git ls-files '*.c' '*.cpp' '*.h' '*.hpp' | xargs --no-run-if-empty clang-format --dry-run --Werror
+
+  check-gersemi:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install gersemi with pipx
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          pipx install gersemi
+          printf '%s/.local/bin\n' "$HOME" >> "$GITHUB_PATH"
+
+      - name: Check with gersemi
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          git ls-files '*.cmake' 'CMakeLists.txt' | xargs -r gersemi -c
+
+  check-reuse:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install reuse with pipx
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          pipx install reuse
+          printf '%s/.local/bin\n' "$HOME" >> "$GITHUB_PATH"
+
+      - name: Check with reuse
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          reuse lint
+
+  accept-check:
+    if: always()
+    needs:
+      - check-shellcheck
+      - check-shfmt
+      - check-clang-format
+      - check-gersemi
+      - check-reuse
+    runs-on: ubuntu-slim
+    permissions: {}
+    steps:
+      - name: Check workflow results
+        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
+        run: |
+          [[ '${{ needs.check-shellcheck.result }}' == 'success' ]] &&
+          [[ '${{ needs.check-shfmt.result }}' == 'success' ]] &&
+          [[ '${{ needs.check-clang-format.result }}' == 'success' ]] &&
+          [[ '${{ needs.check-gersemi.result }}' == 'success' ]] &&
+          [[ '${{ needs.check-reuse.result }}' == 'success' ]] &&
+          printf 'OK\n'
+
