@@ -8,41 +8,46 @@ name: Plugin build macOS
 
 # file: .github/workflows/plugin-build-macos.yml
 # author: Kaito Udagawa <umireon@kaito.tokyo>
-# date: 2026-06-21
+# date: 2026-06-29
 
 on:
   workflow_call:
     inputs:
       job-index:
-        description: The job index for logging.
+        description: Runner job index
         required: false
         type: number
         default: 0
       environment:
-        description: The environment name for the build jobs, or empty string for no environment.
+        description: Runner environment
         required: false
         type: string
         default: ''
       runs-on:
-        description: The runner label to run this workflow on.
-        required: true
+        description: Runner runs-on
+        required: false
         type: string
+        default: macos-15
       DEVELOPER_DIR:
-        description: The value of DEVELOPER_DIR environment variable.
-        required: true
+        description: macOS DEVELOPER_DIR environment variable
+        required: false
         type: string
+        default: /Applications/Xcode_16.4.app/Contents/Developer
       osx-architectures:
-        description: The architecture to build for.
-        required: true
+        description: macOS architectures for target
+        required: false
         type: string
+        default: arm64;x86_64
       osx-deployment-target:
-        description: The deployment target of macOS.
-        required: true
+        description: macOS deployment target
+        required: false
         type: string
+        default: '12.0'
       VCPKG_BINARY_SOURCES:
-        description: VCPKG_BINARY_SOURCES environment variable for the build jobs.
-        required: true
+        description: vcpkg VCPKG_BINARY_SOURCES environment variable
+        required: false
         type: string
+        default: clear
 
     secrets:
       APP_STORE_CONNECT_ISSUER:
@@ -50,10 +55,6 @@ on:
       APP_STORE_CONNECT_KEY:
         required: false
       APP_STORE_CONNECT_KEY_ID:
-        required: false
-      MACOS_SIGNING_APPLICATION_IDENTITY:
-        required: false
-      MACOS_SIGNING_INSTALLER_IDENTITY:
         required: false
       MACOS_SIGNING_CERT_PASSWORD:
         required: false
@@ -74,6 +75,9 @@ jobs:
     env:
       DEVELOPER_DIR: ${{ inputs.DEVELOPER_DIR }}
       VCPKG_BINARY_SOURCES: ${{ inputs.VCPKG_BINARY_SOURCES }}
+      CODESIGN_TEAM: ${{ vars.CODESIGN_TEAM }}
+      MACOS_SIGNING_APPLICATION_IDENTITY: ${{ vars.MACOS_SIGNING_APPLICATION_IDENTITY }}
+      MACOS_SIGNING_INSTALLER_IDENTITY: ${{ vars.MACOS_SIGNING_INSTALLER_IDENTITY }}
 
     steps:
       - name: Print Xcode version
@@ -180,6 +184,8 @@ jobs:
             env -i \
               DEVELOPER_DIR="$DEVELOPER_DIR" \
               HOME="$HOME" \
+              MACOS_SIGNING_APPLICATION_IDENTITY="${MACOS_SIGNING_APPLICATION_IDENTITY:-}" \
+              MACOS_SIGNING_INSTALLER_IDENTITY="${MACOS_SIGNING_INSTALLER_IDENTITY:-}" \
               PATH="$CMAKE_DIR:$NINJA_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
               "$CMAKE_DIR/cmake" "$@"
           }
@@ -202,32 +208,21 @@ jobs:
 
       - name: Set up macOS Signing Certificates
         if: inputs.environment == 'production-macos'
-        id: codesign
-        uses: ./.github/actions/setup-macos-codesigning
+        uses: kaito-tokyo/setup-apple-codesigning@b9f7d7c6819fe6f6bb44694b75963918dcbddd27 # v1.0.0
         with:
-          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
           MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
           MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
 
       - name: Package Plugin (macOS)
-        if: inputs.environment != 'production-macos'
-        run: |
-          cmake --build build --target package_pkg_nosign
-
-      - name: Package Plugin with signing (macOS)
-        if: inputs.environment == 'production-macos'
-        shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
         env:
-          MACOS_SIGNING_APPLICATION_IDENTITY: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
-          MACOS_SIGNING_INSTALLER_IDENTITY: ${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}
+          TARGET: ${{ inputs.environment == 'production-macos' && 'package_pkg_signed' || 'package_pkg_nosign' }}
         run: |
-          cmake --build build --target package_pkg_signed
+          cmake --build build --target "$TARGET"
 
       - name: Notarize Installer
         if: inputs.environment == 'production-macos'
         shell: bash --noprofile --norc -euo pipefail -O nullglob {0}
         env:
-          CODESIGN_TEAM: ${{ steps.codesign.outputs.CODESIGN_TEAM }}
           APP_STORE_CONNECT_ISSUER: ${{ secrets.APP_STORE_CONNECT_ISSUER }}
           APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
